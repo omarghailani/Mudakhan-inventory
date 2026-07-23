@@ -376,6 +376,54 @@ function updateTally(){
   const need=c.red+c.yellow,badge=document.getElementById('buyBadge');
   badge.textContent=need; badge.classList.toggle('hidden',need===0);
 }
+// Fallback for strict mobile browsers: fire the request blind (no-cors),
+// then confirm by re-reading the sheet to see if the value actually changed.
+function fetchStatusFromSheet(itemName){
+  return new Promise((resolve,reject)=>{
+    const cb='vfy_cb_'+Date.now()+'_'+Math.floor(Math.random()*1e5);
+    const s=document.createElement('script');
+    let done=false;
+    function clean(){ try{delete window[cb];}catch(e){window[cb]=undefined;} if(s.parentNode)s.remove(); }
+    const timer=setTimeout(()=>{ if(done)return; done=true; clean(); reject(new Error('verify-timeout')); },12000);
+    window[cb]=function(resp){
+      if(done)return; done=true; clearTimeout(timer); clean();
+      try{
+        const t=resp.table;
+        const labels=t.cols.map((c,i)=>(c.label&&c.label.trim())?c.label.trim():(c.id||('col'+i)));
+        const rows=t.rows.map(r=>{const o={};(r.c||[]).forEach((cell,i)=>{o[labels[i]]=cell&&cell.v!=null?cell.v:'';});return o;});
+        const parsed=parseRows(rows);
+        const hit=parsed.find(x=>x.en===itemName);
+        resolve(hit?hit.status:null);
+      }catch(e){ reject(new Error('verify-parse')); }
+    };
+    s.onerror=()=>{ if(done)return; done=true; clearTimeout(timer); clean(); reject(new Error('verify-net')); };
+    s.src=`https://docs.google.com/spreadsheets/d/${RAW_ID}/gviz/tq?tqx=out:json;responseHandler:${cb}&headers=1&gid=${RAW_GID}&_=${Date.now()}`;
+    document.body.appendChild(s);
+  });
+}
+async function apiCallResilient(params, verify){
+  try{
+    const res=await apiCall(params);
+    if(res && res.ok) return res;
+    if(res && res.error) throw new Error(res.error);
+    throw new Error('failed');
+  }catch(e){
+    const m=String(e&&e.message||'');
+    // Only blind-send when the reply channel failed, not on real server errors
+    if(m!=='timeout' && m!=='network') throw e;
+    const q=Object.keys(params).map(k=>encodeURIComponent(k)+'='+encodeURIComponent(params[k])).join('&');
+    const url=APPS_SCRIPT_URL+'?'+q+'&token='+encodeURIComponent(API_TOKEN)+'&_='+Date.now();
+    try{ await fetch(url,{method:'GET',mode:'no-cors',cache:'no-store'}); }catch(_){}
+    if(!verify) return {ok:true,blind:true};
+    await new Promise(r=>setTimeout(r,2000));
+    try{
+      const actual=await fetchStatusFromSheet(verify.item);
+      if(actual===verify.expect) return {ok:true,verified:true};
+    }catch(_){}
+    throw new Error('unconfirmed');
+  }
+}
+
 // Chef sets a status (optimistic UI, then saves to the sheet)
 async function setItemStatus(btn,status){
   const card=btn.closest('.card'); const en=card.dataset.en;
@@ -387,7 +435,7 @@ async function setItemStatus(btn,status){
   const chip=card.querySelector('.chip'); if(chip){ chip.className='chip '+status; chip.textContent=STLABEL[status]; }
   updateTally();
   try{
-    const res=await apiCall({action:'setStatus',item:en,status:status});
+    const res=await apiCallResilient({action:'setStatus',item:en,status:status},{item:en,expect:status});
     if(!res||!res.ok) throw new Error((res&&res.error)||'failed');
     toast('Saved ✓');
   }catch(e){
@@ -400,6 +448,7 @@ async function setItemStatus(btn,status){
 }
 function explain(e){
   var m=String(e&&e.message||e||'');
+  if(m==='unconfirmed') return "Saved request sent, but couldn't confirm — pull to refresh and check";
   if(m==='timeout'||m==='network') return "No reply from the script — check the deployment is set to 'Anyone'";
   if(m==='not connected') return "Editing isn't connected yet";
   if(m.indexOf('unauthor')>=0) return "Token mismatch — the script's TOKEN must be mudakhan-8471";
@@ -422,7 +471,7 @@ async function submitAdd(){
     notes:document.getElementById('f_note').value.trim()};
   const btn=document.getElementById('saveBtn'); btn.textContent='Adding…'; btn.disabled=true;
   try{
-    const res=await apiCall(payload);
+    const res=await apiCallResilient(payload,null);
     if(!res||!res.ok) throw new Error((res&&res.error)||'failed');
     toast('Added ✓'); closeAdd();
     ['f_en','f_ar','f_cat','f_unit','f_sup','f_note'].forEach(id=>document.getElementById(id).value='');
