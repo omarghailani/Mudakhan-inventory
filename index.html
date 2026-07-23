@@ -395,8 +395,16 @@ async function setItemStatus(btn,status){
     card.querySelectorAll('.se').forEach(b=>b.classList.toggle('on',b.classList.contains(prev)));
     if(chip){ chip.className='chip '+prev; chip.textContent=STLABEL[prev]; }
     updateTally();
-    toast(e.message==='not connected'?"Editing isn't connected yet":'Could not save — check connection',true);
+    toast(explain(e),true);
   }
+}
+function explain(e){
+  var m=String(e&&e.message||e||'');
+  if(m==='timeout'||m==='network') return "No reply from the script — check the deployment is set to 'Anyone'";
+  if(m==='not connected') return "Editing isn't connected yet";
+  if(m.indexOf('unauthor')>=0) return "Token mismatch — the script's TOKEN must be mudakhan-8471";
+  if(m.indexOf('not found')>=0) return m;   // tab / item / column problems
+  return 'Error: '+m;
 }
 // Add item
 function openAdd(){ document.getElementById('addModal').classList.add('show'); }
@@ -419,7 +427,7 @@ async function submitAdd(){
     toast('Added ✓'); closeAdd();
     ['f_en','f_ar','f_cat','f_unit','f_sup','f_note'].forEach(id=>document.getElementById(id).value='');
     load();
-  }catch(e){ toast('Could not add — check connection',true); }
+  }catch(e){ toast(explain(e),true); }
   finally{ btn.textContent='Add to sheet'; btn.disabled=false; }
 }
 
